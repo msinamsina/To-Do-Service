@@ -10,13 +10,10 @@
 # 1. نصب dependencies
 uv sync
 
-# 2. راه‌اندازی دیتابیس (در یک ترمینال)
+# 2. راه‌اندازی دیتابیس
 docker compose up postgres -d
 
-# 3. اجرای FastMCP Server (در یک ترمینال)
-uv run mcp dev app/mcp_server/fastmcp_server.py
-
-# 4. اجرای FastMCP Client (در ترمینال دیگر)
+# 3. اجرای FastMCP Client
 uv run python app/mcp_client/fastmcp_client.py
 ```
 
