@@ -12,6 +12,7 @@ dependencies = [
     "pydantic>=2.9.0",
     "pydantic-settings>=2.6.0",
     "mcp[cli]>=1.0.0",
+    "fastmcp>=0.2.0",
     "python-dotenv>=1.0.0",
 ]
 

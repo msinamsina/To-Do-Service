@@ -1,0 +1,430 @@
+"""FastMCP Client for Todo Service - Interactive CLI."""
+
+import asyncio
+import json
+import os
+import re
+from pathlib import Path
+from typing import Optional, Tuple
+
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
+
+# Persian to English status mapping
+STATUS_MAPPING = {
+    # Persian terms
+    "انجام‌شده": "done",
+    "انجام شده": "done",
+    "تمام شده": "done",
+    "تموم شده": "done",
+    "انجام": "done",
+    "تمام": "done",
+    "در حال انجام": "in_progress",
+    "درحال انجام": "in_progress",
+    "در جریان": "in_progress",
+    "شروع شده": "in_progress",
+    "معلق": "pending",
+    "در انتظار": "pending",
+    "منتظر": "pending",
+    # English terms
+    "done": "done",
+    "completed": "done",
+    "finish": "done",
+    "finished": "done",
+    "in_progress": "in_progress",
+    "in progress": "in_progress",
+    "inprogress": "in_progress",
+    "started": "in_progress",
+    "working": "in_progress",
+    "pending": "pending",
+    "waiting": "pending",
+    "new": "pending",
+}
+
+
+class TodoFastMCPClient:
+    """Interactive CLI client for Todo FastMCP Server."""
+    
+    def __init__(self):
+        self.session: Optional[ClientSession] = None
+        self.exit_commands = ["exit", "quit", "q", "خروج"]
+        self.tools = {}
+        self.prompts = {}
+    
+    async def initialize_session(self, stdio, write):
+        """Initialize the MCP session with the server."""
+        self.session = ClientSession(stdio, write)
+        
+        # Use session as a context manager
+        await self.session.__aenter__()
+        
+        await self.session.initialize()
+        
+        # List available tools
+        response = await self.session.list_tools()
+        self.tools = {tool.name: tool for tool in response.tools}
+        
+        # List available prompts
+        prompts_response = await self.session.list_prompts()
+        self.prompts = {prompt.name: prompt for prompt in prompts_response.prompts}
+    
+    async def cleanup_session(self):
+        """Cleanup the MCP session."""
+        if self.session:
+            await self.session.__aexit__(None, None, None)
+    
+    def parse_command(self, user_input: str) -> Tuple[Optional[str], dict]:
+        """
+        Parse user input and return (tool_name, arguments).
+        
+        Supports both English and Persian commands with comprehensive patterns.
+        """
+        text = user_input.lower().strip()
+        
+        # Pattern for listing tasks
+        list_patterns = [
+            r"لیست.*تسک",
+            r"تسک.*ها.*نشون",
+            r"نشون.*بده.*تسک",
+            r"همه.*تسک",
+            r"لیست.*(pending|in_progress|done|انجام|معلق)",
+            r"(pending|in_progress|done).*لیست",
+            r"list.*task",
+            r"show.*task",
+            r"get.*task",
+            r"all.*task",
+            r"list.*(pending|in_progress|done)",
+            r"(pending|in_progress|done).*list",
+        ]
+        
+        # Pattern for creating tasks
+        create_patterns = [
+            r"(?:یک\s*)?تسک.*(?:جدید\s*)?(?:با\s*عنوان|عنوان)\s+[\"']?(.+?)[\"']?(?:\s*بساز)?$",
+            r"(?:بساز|ایجاد).*تسک.*(?:با\s*عنوان|عنوان)\s+[\"']?(.+?)[\"']?",
+            r"(?:تسک\s*)?(?:جدید\s*)?(?:با\s*عنوان|عنوان)\s+[\"']?(.+?)[\"']?\s*(?:بساز|ایجاد)",
+            r"create.*task.*(?:titled?|with)\s+[\"']?(.+)[\"']?$",
+            r"new.*task\s+[\"']?(.+)[\"']?$",
+            r"add.*task\s+[\"']?(.+)[\"']?$",
+        ]
+        
+        # Pattern for updating status
+        update_patterns = [
+            r"وضعیت.*تسک\s*(\d+).*(?:رو|را)?\s*(pending|in_progress|done|انجام|تمام|معلق)",
+            r"(?:تسک\s*)?(\d+).*(?:رو|را)?\s*(pending|in_progress|done|انجام|تمام|معلق)\s*کن",
+            r"(?:تغییر|آپدیت).*(?:وضعیت)?.*(\d+).*(?:به)?\s*(pending|in_progress|done|انجام|تمام|معلق)",
+            r"update.*(?:task\s*)?(\d+).*(?:to|status)?\s*(pending|in_progress|done)",
+            r"(?:mark|set).*(?:task\s*)?(\d+).*(?:as|to)?\s*(pending|in_progress|done)",
+        ]
+        
+        # Pattern for getting task details
+        detail_patterns = [
+            r"جزئیات.*تسک\s*(\d+)",
+            r"تسک\s*(\d+).*(?:جزئیات|نشون|ببین)",
+            r"(?:نشون|نمایش).*تسک\s*(\d+)",
+            r"(?:get|show|view).*task\s*(\d+)",
+            r"task\s*(\d+).*(?:detail|info)",
+            r"(?:detail|info).*(?:of|for)?.*task\s*(\d+)",
+        ]
+        
+        # Pattern for deleting tasks
+        delete_patterns = [
+            r"(?:حذف|پاک).*تسک\s*(\d+)",
+            r"(?:حذف|پاک).*\s*(\d+)",
+            r"تسک\s*(\d+).*(?:رو|را)?\s*(?:حذف|پاک)\s*کن",
+            r"delete.*task\s*(\d+)",
+            r"delete.*\s*(\d+)",
+            r"remove.*task\s*(\d+)",
+            r"remove.*\s*(\d+)",
+            r"task\s*(\d+).*delete",
+        ]
+        
+        # Check for prompt patterns first
+        if re.search(r"(help|guide|راهنما|کمک)", text, re.IGNORECASE):
+            return ("prompt:task_management_guide", {})
+        
+        if re.search(r"(workflow|جریان کار|مراحل)", text, re.IGNORECASE):
+            return ("prompt:task_status_workflow", {})
+        
+        if re.search(r"(daily|روزانه|summary|خلاصه)", text, re.IGNORECASE):
+            return ("prompt:daily_task_summary", {})
+        
+        # Check for list with status filter
+        for pattern in list_patterns:
+            if re.search(pattern, text):
+                # Check for status filter
+                status = None
+                # First check for English status in original input
+                for eng_status in ["pending", "in_progress", "done"]:
+                    if eng_status in user_input.lower():
+                        status = eng_status
+                        break
+                # Then check for Persian status using STATUS_MAPPING
+                if not status:
+                    for persian, english in STATUS_MAPPING.items():
+                        if persian in user_input:
+                            status = english
+                            break
+                
+                args = {}
+                if status:
+                    args["status"] = status
+                return ("list_tasks", args)
+        
+        # Check for create task
+        for pattern in create_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                title = match.group(1).strip()
+                # Clean up title
+                title = re.sub(r'\s*(بساز|ایجاد کن|create|add).*$', '', title, flags=re.IGNORECASE)
+                title = title.strip().strip('"\'')
+                if title:
+                    return ("create_task", {"title": title})
+        
+        # Check for update status
+        for pattern in update_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                task_id = int(match.group(1))
+                status_raw = match.group(2).strip()
+                status = STATUS_MAPPING.get(status_raw, status_raw)
+                return ("update_task_status", {"task_id": task_id, "status": status})
+        
+        # Check for get task details
+        for pattern in detail_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                task_id = int(match.group(1))
+                return ("get_task_by_id", {"task_id": task_id})
+        
+        # Check for delete task
+        for pattern in delete_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                task_id = int(match.group(1))
+                return ("delete_task", {"task_id": task_id})
+        
+        # Fallback: try to extract any number and status for update
+        numbers = re.findall(r'\d+', text)
+        if numbers:
+            task_id = int(numbers[0])
+            
+            # Check for status words using STATUS_MAPPING
+            for persian, english in STATUS_MAPPING.items():
+                if persian in text:
+                    return ("update_task_status", {"task_id": task_id, "status": english})
+            
+            # Just show details if only a number mentioned
+            if "جزئیات" in text or "detail" in text or "نشون" in text or "show" in text:
+                return ("get_task_by_id", {"task_id": task_id})
+        
+        # Check if it's just asking for list
+        if any(word in text for word in ["تسک", "task", "list", "لیست", "همه", "all"]):
+            return ("list_tasks", {})
+        
+        return (None, {})
+    
+    def format_result(self, tool_name: str, result: dict) -> str:
+        """Format the result based on tool type."""
+        if "error" in result:
+            return f"❌ Error: {result['error']}"
+            # return f"❌ Error: [{result['error'].get('code', 'ERROR')}] {result['error'].get('message', 'Unknown error')}"
+        
+        if tool_name == "list_tasks":
+            tasks = result.get("tasks", [])
+            count = len(tasks)
+            output = f"📋 Found {count} task(s):\n\n"
+            if tasks:
+                output += self.format_tasks_table(tasks)
+            else:
+                output += "هیچ تسکی یافت نشد / No tasks found"
+            return output
+        
+        elif tool_name == "get_task_by_id":
+            task = result.get("task", {})
+            output = f"📝 Task Details:\n\n"
+            output += json.dumps(task, ensure_ascii=False, indent=2)
+            return output
+        
+        elif tool_name == "create_task":
+            task = result.get("task", {})
+            output = f"✅ Task created successfully!\n\n"
+            output += json.dumps(task, ensure_ascii=False, indent=2)
+            return output
+        
+        elif tool_name == "update_task_status":
+            task = result.get("task", {})
+            output = f"✅ Task status updated successfully!\n\n"
+            output += json.dumps(task, ensure_ascii=False, indent=2)
+            return output
+        
+        elif tool_name == "delete_task":
+            output = f"✅ Task {result.get('id')} deleted successfully!"
+            return output
+        
+        else:
+            return json.dumps(result, ensure_ascii=False, indent=2)
+    
+    async def call_tool(self, tool_name: str, arguments: dict):
+        """Call a tool on the server."""
+        if tool_name not in self.tools:
+            print(f"❌ Unknown tool: {tool_name}")
+            return
+        
+        print(f"\n🔧 Calling: {tool_name}")
+        if arguments:
+            print(f"   Arguments: {arguments}")
+        
+        result = await self.session.call_tool(tool_name, arguments)
+        
+        # Parse the result
+        for content in result.content:
+            if content.type == "text":
+                try:
+                    data = json.loads(content.text)
+                    formatted = self.format_result(tool_name, data)
+                    print(f"\n{formatted}")
+                except json.JSONDecodeError:
+                    print(f"\n📄 {content.text}")
+    
+    async def get_prompt(self, prompt_name: str, arguments: dict = None):
+        """Get a prompt from the server."""
+        if prompt_name not in self.prompts:
+            print(f"❌ Unknown prompt: {prompt_name}")
+            return
+        
+        print(f"\n📖 Getting prompt: {prompt_name}")
+        
+        result = await self.session.get_prompt(prompt_name, arguments or {})
+        
+        # Display the prompt content
+        for message in result.messages:
+            if message.role == "user":
+                print("\n" + "="*60)
+                print(message.content.text)
+                print("="*60)
+    
+    def format_tasks_table(self, tasks: list[dict]) -> str:
+        """Format tasks as a simple table."""
+        if not tasks:
+            return "هیچ تسکی یافت نشد / No tasks found"
+        
+        # Header
+        lines = [
+            "┌" + "─" * 6 + "┬" + "─" * 32 + "┬" + "─" * 14 + "┬" + "─" * 22 + "┐",
+            "│ {:^4} │ {:^30} │ {:^12} │ {:^20} │".format("ID", "Title", "Status", "Created At"),
+            "├" + "─" * 6 + "┼" + "─" * 32 + "┼" + "─" * 14 + "┼" + "─" * 22 + "┤",
+        ]
+        
+        # Rows
+        for task in tasks:
+            title = task.get("title", "")[:28]
+            if len(task.get("title", "")) > 28:
+                title += ".."
+            status = task.get("status", "")
+            created = task.get("created_at", "")[:19] if task.get("created_at") else ""
+            
+            lines.append(
+                "│ {:^4} │ {:^30} │ {:^12} │ {:^20} │".format(
+                    task.get("id", ""),
+                    title,
+                    status,
+                    created
+                )
+            )
+        
+        lines.append("└" + "─" * 6 + "┴" + "─" * 32 + "┴" + "─" * 14 + "┴" + "─" * 22 + "┘")
+        
+        return "\n".join(lines)
+    
+    async def run(self):
+        """Run the interactive CLI."""
+        print("="*60)
+        print("🚀 Todo FastMCP Client")
+        print("="*60)
+        print("\nConnecting to FastMCP Server...")
+        
+        # Get the workspace root directory
+        workspace_root = Path(__file__).parent.parent.parent
+        server_script = workspace_root / "app" / "mcp_server" / "fastmcp_server.py"
+        
+        server_params = StdioServerParameters(
+            command="uv",
+            args=["run", "python", str(server_script)],
+            env=None
+        )
+        
+        # Use the context manager properly
+        async with stdio_client(server_params) as (stdio, write):
+            try:
+                await self.initialize_session(stdio, write)
+                print("✅ Connected to FastMCP Server!")
+                print(f"\n📦 Available tools: {len(self.tools)}")
+                print(f"📝 Available prompts: {len(self.prompts)}")
+            except Exception as e:
+                print(f"❌ Failed to connect: {e}")
+                return
+            
+            print("\n" + "-"*60)
+            print("Available commands (Persian/English):")
+            print("  - لیست تسک‌ها رو نشون بده / show all tasks")
+            print("  - لیست pending رو نشون بده / list pending tasks")
+            print("  - یک تسک جدید با عنوان X بساز / create task with title X")
+            print("  - وضعیت تسک 5 رو done کن / update task 5 to done")
+            print("  - جزئیات تسک 3 / show task 3 details")
+            print("  - تسک 2 رو حذف کن / delete task 2")
+            print("  - help / راهنما - Show task management guide")
+            print("  - workflow / جریان کار - Show status workflow")
+            print("  - daily / روزانه - Show daily summary template")
+            print("  - exit / quit / خروج")
+            print("-"*60 + "\n")
+            
+            try:
+                while True:
+                    try:
+                        user_input = input("You: ").strip()
+                        
+                        if not user_input:
+                            continue
+                        
+                        # Check for exit commands
+                        if user_input.lower() in self.exit_commands:
+                            print("\n👋 Goodbye!")
+                            break
+                        
+                        # Parse and execute command
+                        tool_name, arguments = self.parse_command(user_input)
+                        
+                        if not tool_name:
+                            print("\n❓ I didn't understand that. Please try one of the supported commands.")
+                            print("   متوجه نشدم. لطفاً یکی از دستورات پشتیبانی شده را امتحان کنید.\n")
+                            continue
+                        
+                        # Check if it's a prompt request
+                        if tool_name.startswith("prompt:"):
+                            prompt_name = tool_name.split(":", 1)[1]
+                            await self.get_prompt(prompt_name, arguments)
+                        else:
+                            await self.call_tool(tool_name, arguments)
+                        
+                        print()  # Empty line for readability
+                    
+                    except KeyboardInterrupt:
+                        print("\n\n👋 Goodbye!")
+                        break
+                    except Exception as e:
+                        print(f"\n❌ Error: {e}")
+            finally:
+                # Cleanup session
+                await self.cleanup_session()
+
+
+async def main():
+    """Main entry point."""
+    client = TodoFastMCPClient()
+    await client.run()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
