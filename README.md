@@ -140,6 +140,11 @@ uv run mcp dev app/mcp_server/fastmcp_server
 
 **توجه:** MCP Server مبتنی بر stdio است و برای ارتباط با کلاینت‌های MCP طراحی شده است.
 
+![MCP Inspector](assets/tools.JPG)
+
+![MCP Inspector](assets/prompts.JPG)
+
+
 ### 4. اجرای MCP Client
 
 #### کلاینت استاندارد
