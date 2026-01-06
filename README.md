@@ -54,6 +54,34 @@ You: help
 
 ## 🛠️ نصب
 
+### 0. نصب nodejs و npm
+```bash
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt update
+sudo apt install nodejs npm -y
+```
+
+#### نصب NVM
+```bash
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+source ~/.bashrc
+```
+
+#### نصب Node.js با NVM
+```bash
+nvm install 22
+nvm use 22
+nvm alias default 22
+```
+
+#### بررسی و اطمینان از نصب
+```bash
+node -v
+npm -v
+npx -v
+nvm -v
+```
+
 ### 1. نصب uv
 
 ```bash
@@ -132,7 +160,7 @@ uv run python -m app.mcp_server
 
 #### نسخه FastMCP (توصیه می‌شود)
 ```bash
-uv run mcp dev app/mcp_server/fastmcp_server
+uv run mcp dev app/mcp_server/fastmcp_server.py
 ```
 
 **توجه:** MCP Server مبتنی بر stdio است و برای ارتباط با کلاینت‌های MCP طراحی شده است.
